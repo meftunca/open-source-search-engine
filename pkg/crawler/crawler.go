@@ -94,12 +94,6 @@ func (c *Crawler) worker(ctx context.Context, id int) {
 			urlItem := urls[0]
 			log.Printf("Worker %d: crawling %s\n", id, urlItem.URL)
 
-			// Update status to processing
-			if err := c.db.UpdateURLStatus(urlItem.ID, "processing"); err != nil {
-				log.Printf("Worker %d: error updating status: %v\n", id, err)
-				continue
-			}
-
 			// Crawl the URL
 			doc, err := c.crawl(urlItem.URL)
 			if err != nil {

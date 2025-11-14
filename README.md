@@ -63,7 +63,7 @@ Configure the search engine using environment variables:
 |----------|---------|-------------|
 | `DB_PATH` | `./search_engine.db` | Path to DuckDB database file |
 | `HTTP_PORT` | `8080` | HTTP server port |
-| `CRAWLER_WORKERS` | `10` | Number of concurrent crawler workers |
+| `CRAWLER_WORKERS` | `1` | Number of concurrent crawler workers (Note: DuckDB has limited concurrent write support, so 1 worker is recommended) |
 | `CRAWL_DELAY` | `1` | Delay in seconds between requests to same domain |
 | `MAX_DEPTH` | `3` | Maximum crawl depth |
 | `USER_AGENT` | `OpenSourceSearchEngine/1.0` | User agent string |

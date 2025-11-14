@@ -36,7 +36,7 @@ func Load() *Config {
 	return &Config{
 		DatabasePath:   getEnv("DB_PATH", "./search_engine.db"),
 		HTTPPort:       getEnv("HTTP_PORT", "8080"),
-		CrawlerWorkers: getEnvAsInt("CRAWLER_WORKERS", 10),
+		CrawlerWorkers: getEnvAsInt("CRAWLER_WORKERS", 1),
 		CrawlDelay:     getEnvAsInt("CRAWL_DELAY", 1),
 		MaxDepth:       getEnvAsInt("MAX_DEPTH", 3),
 		UserAgent:      getEnv("USER_AGENT", "OpenSourceSearchEngine/1.0"),

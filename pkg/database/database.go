@@ -18,6 +18,7 @@ package database
 import (
 	"database/sql"
 	"fmt"
+	"sync"
 
 	_ "github.com/marcboeker/go-duckdb"
 	"github.com/meftunca/open-source-search-engine/internal/models"
@@ -26,6 +27,7 @@ import (
 // DB wraps the DuckDB connection
 type DB struct {
 	conn *sql.DB
+	mu   sync.Mutex // Mutex for concurrent access to queue operations
 }
 
 // New creates a new database connection and initializes tables
@@ -52,8 +54,10 @@ func (db *DB) Close() error {
 // initTables creates the necessary database tables
 func (db *DB) initTables() error {
 	queries := []string{
+		`CREATE SEQUENCE IF NOT EXISTS seq_documents`,
+		`CREATE SEQUENCE IF NOT EXISTS seq_url_queue`,
 		`CREATE TABLE IF NOT EXISTS documents (
-			id INTEGER PRIMARY KEY,
+			id INTEGER DEFAULT nextval('seq_documents'),
 			url VARCHAR NOT NULL UNIQUE,
 			title VARCHAR,
 			content TEXT,
@@ -63,16 +67,18 @@ func (db *DB) initTables() error {
 			indexed_at TIMESTAMP,
 			status_code INTEGER,
 			content_type VARCHAR,
-			hash VARCHAR
+			hash VARCHAR,
+			PRIMARY KEY (id)
 		)`,
 		`CREATE TABLE IF NOT EXISTS url_queue (
-			id INTEGER PRIMARY KEY,
+			id INTEGER DEFAULT nextval('seq_url_queue'),
 			url VARCHAR NOT NULL UNIQUE,
 			priority INTEGER DEFAULT 0,
 			added_at TIMESTAMP,
 			last_attempt TIMESTAMP,
 			attempts INTEGER DEFAULT 0,
-			status VARCHAR DEFAULT 'pending'
+			status VARCHAR DEFAULT 'pending',
+			PRIMARY KEY (id)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_documents_url ON documents(url)`,
 		`CREATE INDEX IF NOT EXISTS idx_url_queue_status ON url_queue(status)`,
@@ -175,6 +181,10 @@ func (db *DB) AddURL(url string, priority int) error {
 
 // GetNextURLs retrieves the next URLs to crawl
 func (db *DB) GetNextURLs(limit int) ([]*models.URLQueue, error) {
+	// Use mutex to prevent concurrent access to URL queue operations
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
 	query := `SELECT id, url, priority, added_at, last_attempt, attempts, status
 		FROM url_queue
 		WHERE status = 'pending'
@@ -195,6 +205,15 @@ func (db *DB) GetNextURLs(limit int) ([]*models.URLQueue, error) {
 			return nil, err
 		}
 		urls = append(urls, &u)
+	}
+
+	// Mark them as processing immediately within the same lock
+	for _, u := range urls {
+		_, err := db.conn.Exec(`UPDATE url_queue SET status = 'processing', last_attempt = CURRENT_TIMESTAMP, attempts = attempts + 1 WHERE id = ? AND status = 'pending'`, u.ID)
+		if err != nil {
+			// Ignore errors here as another worker may have already grabbed it
+			continue
+		}
 	}
 
 	return urls, nil
