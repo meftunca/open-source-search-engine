@@ -19,7 +19,7 @@
 *.test
 *.out
 go.work
-search-engine
+/search-engine
 /vendor/
 
 # Database files
