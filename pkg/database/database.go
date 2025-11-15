@@ -225,21 +225,12 @@ func (db *DB) GetNextURLs(limit int) ([]*models.URLQueue, error) {
 		urls = append(urls, &u)
 	}
 
-	// Mark them as processing immediately within the same lock
-	for _, u := range urls {
-		_, err := db.conn.Exec(`UPDATE url_queue SET status = 'processing', last_attempt = CURRENT_TIMESTAMP, attempts = attempts + 1 WHERE id = ? AND status = 'pending'`, u.ID)
-		if err != nil {
-			// Ignore errors here as another worker may have already grabbed it
-			continue
-		}
-	}
-
 	return urls, nil
 }
 
 // UpdateURLStatus updates the status of a URL in the queue
 func (db *DB) UpdateURLStatus(id int64, status string) error {
-	query := `UPDATE url_queue SET status = ?, last_attempt = CURRENT_TIMESTAMP, attempts = attempts + 1 WHERE id = ?`
+	query := `UPDATE url_queue SET status = ? WHERE id = ?`
 	_, err := db.conn.Exec(query, status, id)
 	return err
 }
