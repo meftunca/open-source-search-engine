@@ -4,6 +4,7 @@ go 1.24.9
 
 require (
 	github.com/marcboeker/go-duckdb v1.8.5
+	github.com/sirupsen/logrus v1.9.3
 	golang.org/x/net v0.47.0
 )
 

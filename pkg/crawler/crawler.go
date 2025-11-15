@@ -20,7 +20,6 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -30,6 +29,8 @@ import (
 	"github.com/meftunca/open-source-search-engine/internal/models"
 	"github.com/meftunca/open-source-search-engine/pkg/config"
 	"github.com/meftunca/open-source-search-engine/pkg/database"
+	"github.com/meftunca/open-source-search-engine/pkg/logger"
+	"github.com/meftunca/open-source-search-engine/pkg/metrics"
 	"golang.org/x/net/html"
 )
 
@@ -54,7 +55,8 @@ func New(db *database.DB, cfg *config.Config) *Crawler {
 
 // Start begins the crawling process
 func (c *Crawler) Start(ctx context.Context) error {
-	log.Println("Starting crawler with", c.config.CrawlerWorkers, "workers")
+	log := logger.GetLogger()
+	log.WithField("workers", c.config.CrawlerWorkers).Info("Starting crawler")
 
 	for i := 0; i < c.config.CrawlerWorkers; i++ {
 		c.wg.Add(1)
@@ -68,19 +70,20 @@ func (c *Crawler) Start(ctx context.Context) error {
 // worker processes URLs from the queue
 func (c *Crawler) worker(ctx context.Context, id int) {
 	defer c.wg.Done()
+	log := logger.GetLogger()
 
-	log.Printf("Worker %d started\n", id)
+	log.WithField("worker_id", id).Info("Worker started")
 
 	for {
 		select {
 		case <-ctx.Done():
-			log.Printf("Worker %d stopping\n", id)
+			log.WithField("worker_id", id).Info("Worker stopping")
 			return
 		default:
 			// Get next URL from queue
 			urls, err := c.db.GetNextURLs(1)
 			if err != nil {
-				log.Printf("Worker %d: error getting URLs: %v\n", id, err)
+				log.WithError(err).WithField("worker_id", id).Error("Error getting URLs")
 				time.Sleep(1 * time.Second)
 				continue
 			}
@@ -92,25 +95,34 @@ func (c *Crawler) worker(ctx context.Context, id int) {
 			}
 
 			urlItem := urls[0]
-			log.Printf("Worker %d: crawling %s\n", id, urlItem.URL)
+			log.WithFields(map[string]interface{}{
+				"worker_id": id,
+				"url":       urlItem.URL,
+			}).Info("Crawling URL")
 
 			// Crawl the URL
 			doc, err := c.crawl(urlItem.URL)
 			if err != nil {
-				log.Printf("Worker %d: error crawling %s: %v\n", id, urlItem.URL, err)
+				log.WithError(err).WithFields(map[string]interface{}{
+					"worker_id": id,
+					"url":       urlItem.URL,
+				}).Error("Error crawling URL")
 				c.db.UpdateURLStatus(urlItem.ID, "failed")
+				metrics.GetMetrics().IncrementCrawlErrors()
 				continue
 			}
 
 			// Save the document
 			if err := c.db.SaveDocument(doc); err != nil {
-				log.Printf("Worker %d: error saving document: %v\n", id, err)
+				log.WithError(err).WithField("worker_id", id).Error("Error saving document")
 				c.db.UpdateURLStatus(urlItem.ID, "failed")
+				metrics.GetMetrics().IncrementCrawlErrors()
 				continue
 			}
 
 			// Mark as completed
 			c.db.UpdateURLStatus(urlItem.ID, "completed")
+			metrics.GetMetrics().IncrementPagesCrawled()
 
 			// Extract and queue new URLs
 			c.extractAndQueueURLs(doc.Content, urlItem.URL)
@@ -146,8 +158,13 @@ func (c *Crawler) crawl(urlStr string) (*models.Document, error) {
 		return nil, err
 	}
 
-	title := extractTitle(doc)
-	metaDesc := extractMetaDescription(doc)
+	// Clean HTML (remove script/style tags)
+	cleanHTML(doc)
+
+	// Extract enhanced metadata
+	metadata := extractEnhancedMetadata(doc, urlStr)
+	
+	// Extract text content
 	content := extractText(doc)
 
 	// Calculate hash
@@ -155,15 +172,32 @@ func (c *Crawler) crawl(urlStr string) (*models.Document, error) {
 
 	return &models.Document{
 		URL:         urlStr,
-		Title:       title,
+		Title:       getStringFromMetadata(metadata, "title"),
 		Content:     content,
-		MetaDesc:    metaDesc,
+		MetaDesc:    getStringFromMetadata(metadata, "meta_description"),
+		Keywords:    getStringFromMetadata(metadata, "keywords"),
+		ImageURLs:   getStringFromMetadata(metadata, "image_urls"),
+		VideoURLs:   getStringFromMetadata(metadata, "video_urls"),
+		OGImage:     getStringFromMetadata(metadata, "og_image"),
+		OGTitle:     getStringFromMetadata(metadata, "og_title"),
+		OGDesc:      getStringFromMetadata(metadata, "og_description"),
+		Author:      getStringFromMetadata(metadata, "author"),
 		StatusCode:  resp.StatusCode,
 		ContentType: resp.Header.Get("Content-Type"),
 		CrawledAt:   time.Now(),
 		IndexedAt:   time.Now(),
 		Hash:        hash,
 	}, nil
+}
+
+// getStringFromMetadata safely extracts string from metadata map
+func getStringFromMetadata(metadata map[string]interface{}, key string) string {
+	if val, ok := metadata[key]; ok {
+		if str, ok := val.(string); ok {
+			return str
+		}
+	}
+	return ""
 }
 
 // extractTitle extracts the title from HTML

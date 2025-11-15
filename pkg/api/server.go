@@ -17,12 +17,14 @@ package api
 
 import (
 	"encoding/json"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/meftunca/open-source-search-engine/pkg/database"
+	"github.com/meftunca/open-source-search-engine/pkg/logger"
+	"github.com/meftunca/open-source-search-engine/pkg/metrics"
 )
 
 // Server represents the HTTP API server
@@ -43,15 +45,44 @@ func New(db *database.DB) *Server {
 
 // registerRoutes sets up the API endpoints
 func (s *Server) registerRoutes() {
-	s.mux.HandleFunc("/api/search", s.handleSearch)
-	s.mux.HandleFunc("/api/crawl", s.handleCrawl)
+	s.mux.HandleFunc("/api/search", s.loggingMiddleware(s.handleSearch))
+	s.mux.HandleFunc("/api/search/images", s.loggingMiddleware(s.handleImageSearch))
+	s.mux.HandleFunc("/api/search/videos", s.loggingMiddleware(s.handleVideoSearch))
+	s.mux.HandleFunc("/api/semantic-search", s.loggingMiddleware(s.handleSemanticSearch))
+	s.mux.HandleFunc("/api/crawl", s.loggingMiddleware(s.handleCrawl))
 	s.mux.HandleFunc("/api/health", s.handleHealth)
+	s.mux.HandleFunc("/api/metrics", s.handleMetrics)
 	s.mux.HandleFunc("/", s.handleRoot)
 }
 
 // ServeHTTP implements http.Handler
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mux.ServeHTTP(w, r)
+}
+
+// loggingMiddleware logs HTTP requests
+func (s *Server) loggingMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		
+		// Record metrics
+		m := metrics.GetMetrics()
+		m.IncrementRequests()
+		
+		// Call the next handler
+		next(w, r)
+		
+		// Log the request
+		duration := time.Since(start)
+		m.UpdateAvgResponseTime(duration)
+		
+		logger.GetLogger().WithFields(map[string]interface{}{
+			"method":   r.Method,
+			"path":     r.URL.Path,
+			"duration": duration.Milliseconds(),
+			"remote":   r.RemoteAddr,
+		}).Info("HTTP request")
+	}
 }
 
 // handleSearch handles search requests
@@ -75,9 +106,11 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	metrics.GetMetrics().IncrementSearchRequests()
+
 	results, err := s.db.Search(query, limit)
 	if err != nil {
-		log.Printf("Search error: %v", err)
+		logger.GetLogger().WithError(err).Error("Search error")
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -118,7 +151,7 @@ func (s *Server) handleCrawl(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.db.AddURL(req.URL, req.Priority); err != nil {
-		log.Printf("Error adding URL: %v", err)
+		logger.GetLogger().WithError(err).Error("Error adding URL")
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -128,6 +161,143 @@ func (s *Server) handleCrawl(w http.ResponseWriter, r *http.Request) {
 		"status":  "success",
 		"message": "URL added to crawl queue",
 	})
+}
+
+// handleImageSearch handles image search requests
+func (s *Server) handleImageSearch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	query := r.URL.Query().Get("q")
+	if query == "" {
+		http.Error(w, "Query parameter 'q' is required", http.StatusBadRequest)
+		return
+	}
+
+	limitStr := r.URL.Query().Get("limit")
+	limit := 10
+	if limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+			limit = l
+		}
+	}
+
+	metrics.GetMetrics().IncrementImageSearches()
+
+	results, err := s.db.SearchImages(query, limit)
+	if err != nil {
+		logger.GetLogger().WithError(err).Error("Image search error")
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"query":   query,
+		"type":    "images",
+		"results": results,
+		"count":   len(results),
+	})
+}
+
+// handleVideoSearch handles video search requests
+func (s *Server) handleVideoSearch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	query := r.URL.Query().Get("q")
+	if query == "" {
+		http.Error(w, "Query parameter 'q' is required", http.StatusBadRequest)
+		return
+	}
+
+	limitStr := r.URL.Query().Get("limit")
+	limit := 10
+	if limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+			limit = l
+		}
+	}
+
+	metrics.GetMetrics().IncrementVideoSearches()
+
+	results, err := s.db.SearchVideos(query, limit)
+	if err != nil {
+		logger.GetLogger().WithError(err).Error("Video search error")
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"query":   query,
+		"type":    "videos",
+		"results": results,
+		"count":   len(results),
+	})
+}
+
+// handleSemanticSearch handles semantic search requests for AI integration
+func (s *Server) handleSemanticSearch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Query      string                 `json:"query"`
+		Limit      int                    `json:"limit"`
+		Embedding  []float64              `json:"embedding,omitempty"` // For future AI integration
+		Metadata   map[string]interface{} `json:"metadata,omitempty"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.Query == "" {
+		http.Error(w, "Query is required", http.StatusBadRequest)
+		return
+	}
+
+	if req.Limit == 0 {
+		req.Limit = 10
+	}
+
+	metrics.GetMetrics().IncrementSemanticSearches()
+
+	// For now, use regular search. In the future, this can be enhanced with embeddings
+	results, err := s.db.Search(req.Query, req.Limit)
+	if err != nil {
+		logger.GetLogger().WithError(err).Error("Semantic search error")
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	// Enhanced response for AI consumption
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"query":   req.Query,
+		"type":    "semantic",
+		"results": results,
+		"count":   len(results),
+		"metadata": map[string]interface{}{
+			"engine":      "open-source-search-engine",
+			"version":     "1.0",
+			"search_type": "semantic",
+		},
+	})
+}
+
+// handleMetrics handles metrics requests
+func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(metrics.GetMetrics().GetSnapshot())
 }
 
 // handleHealth handles health check requests

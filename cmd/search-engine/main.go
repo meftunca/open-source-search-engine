@@ -18,7 +18,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -29,23 +28,31 @@ import (
 	"github.com/meftunca/open-source-search-engine/pkg/config"
 	"github.com/meftunca/open-source-search-engine/pkg/crawler"
 	"github.com/meftunca/open-source-search-engine/pkg/database"
+	"github.com/meftunca/open-source-search-engine/pkg/logger"
 )
 
 func main() {
-	log.Println("Starting Open Source Search Engine...")
+	// Initialize logger
+	logger.Init()
+	log := logger.GetLogger()
+	
+	log.Info("Starting Open Source Search Engine...")
 
 	// Load configuration
 	cfg := config.Load()
-	log.Printf("Configuration: DB=%s, Port=%s, Workers=%d\n", 
-		cfg.DatabasePath, cfg.HTTPPort, cfg.CrawlerWorkers)
+	log.WithFields(map[string]interface{}{
+		"db_path": cfg.DatabasePath,
+		"port":    cfg.HTTPPort,
+		"workers": cfg.CrawlerWorkers,
+	}).Info("Configuration loaded")
 
 	// Initialize database
 	db, err := database.New(cfg.DatabasePath)
 	if err != nil {
-		log.Fatalf("Failed to initialize database: %v", err)
+		log.WithError(err).Fatal("Failed to initialize database")
 	}
 	defer db.Close()
-	log.Println("Database initialized")
+	log.Info("Database initialized")
 
 	// Create context for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
@@ -55,10 +62,10 @@ func main() {
 	crawlerInstance := crawler.New(db, cfg)
 	go func() {
 		if err := crawlerInstance.Start(ctx); err != nil {
-			log.Printf("Crawler error: %v", err)
+			log.WithError(err).Error("Crawler error")
 		}
 	}()
-	log.Println("Crawler started")
+	log.Info("Crawler started")
 
 	// Setup HTTP server
 	apiServer := api.New(db)
@@ -72,9 +79,9 @@ func main() {
 
 	// Start HTTP server in background
 	go func() {
-		log.Printf("HTTP server listening on :%s\n", cfg.HTTPPort)
+		log.WithField("port", cfg.HTTPPort).Info("HTTP server listening")
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("HTTP server error: %v", err)
+			log.WithError(err).Fatal("HTTP server error")
 		}
 	}()
 
@@ -83,7 +90,7 @@ func main() {
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	<-sigChan
 
-	log.Println("\nShutting down gracefully...")
+	log.Info("Shutting down gracefully...")
 
 	// Cancel context to stop crawler
 	cancel()
@@ -93,9 +100,9 @@ func main() {
 	defer shutdownCancel()
 	
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
-		log.Printf("HTTP server shutdown error: %v", err)
+		log.WithError(err).Error("HTTP server shutdown error")
 	}
 
-	log.Println("Shutdown complete")
+	log.Info("Shutdown complete")
 	fmt.Println("Thank you for using Open Source Search Engine!")
 }
