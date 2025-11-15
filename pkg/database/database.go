@@ -63,6 +63,12 @@ func (db *DB) initTables() error {
 			content TEXT,
 			meta_description VARCHAR,
 			keywords VARCHAR,
+			image_urls TEXT,
+			video_urls TEXT,
+			og_image VARCHAR,
+			og_title VARCHAR,
+			og_description VARCHAR,
+			author VARCHAR,
 			crawled_at TIMESTAMP,
 			indexed_at TIMESTAMP,
 			status_code INTEGER,
@@ -97,13 +103,19 @@ func (db *DB) initTables() error {
 // SaveDocument saves or updates a document in the database
 func (db *DB) SaveDocument(doc *models.Document) error {
 	query := `INSERT INTO documents 
-		(url, title, content, meta_description, keywords, crawled_at, indexed_at, status_code, content_type, hash)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		(url, title, content, meta_description, keywords, image_urls, video_urls, og_image, og_title, og_description, author, crawled_at, indexed_at, status_code, content_type, hash)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (url) DO UPDATE SET
 		title = EXCLUDED.title,
 		content = EXCLUDED.content,
 		meta_description = EXCLUDED.meta_description,
 		keywords = EXCLUDED.keywords,
+		image_urls = EXCLUDED.image_urls,
+		video_urls = EXCLUDED.video_urls,
+		og_image = EXCLUDED.og_image,
+		og_title = EXCLUDED.og_title,
+		og_description = EXCLUDED.og_description,
+		author = EXCLUDED.author,
 		crawled_at = EXCLUDED.crawled_at,
 		indexed_at = EXCLUDED.indexed_at,
 		status_code = EXCLUDED.status_code,
@@ -112,6 +124,7 @@ func (db *DB) SaveDocument(doc *models.Document) error {
 
 	_, err := db.conn.Exec(query,
 		doc.URL, doc.Title, doc.Content, doc.MetaDesc, doc.Keywords,
+		doc.ImageURLs, doc.VideoURLs, doc.OGImage, doc.OGTitle, doc.OGDesc, doc.Author,
 		doc.CrawledAt, doc.IndexedAt, doc.StatusCode, doc.ContentType, doc.Hash)
 
 	return err
@@ -120,12 +133,14 @@ func (db *DB) SaveDocument(doc *models.Document) error {
 // GetDocument retrieves a document by URL
 func (db *DB) GetDocument(url string) (*models.Document, error) {
 	query := `SELECT id, url, title, content, meta_description, keywords, 
+		image_urls, video_urls, og_image, og_title, og_description, author,
 		crawled_at, indexed_at, status_code, content_type, hash
 		FROM documents WHERE url = ?`
 
 	var doc models.Document
 	err := db.conn.QueryRow(query, url).Scan(
 		&doc.ID, &doc.URL, &doc.Title, &doc.Content, &doc.MetaDesc, &doc.Keywords,
+		&doc.ImageURLs, &doc.VideoURLs, &doc.OGImage, &doc.OGTitle, &doc.OGDesc, &doc.Author,
 		&doc.CrawledAt, &doc.IndexedAt, &doc.StatusCode, &doc.ContentType, &doc.Hash)
 
 	if err != nil {
@@ -140,6 +155,7 @@ func (db *DB) Search(query string, limit int) ([]*models.SearchResult, error) {
 	// Simple search implementation using LIKE for now
 	// In production, you'd want to use FTS or more advanced indexing
 	searchQuery := `SELECT id, url, title, content, meta_description, keywords,
+		image_urls, video_urls, og_image, og_title, og_description, author,
 		crawled_at, indexed_at, status_code, content_type, hash
 		FROM documents
 		WHERE title LIKE ? OR content LIKE ? OR meta_description LIKE ?
@@ -157,7 +173,9 @@ func (db *DB) Search(query string, limit int) ([]*models.SearchResult, error) {
 		var result models.SearchResult
 		err := rows.Scan(
 			&result.ID, &result.URL, &result.Title, &result.Content,
-			&result.MetaDesc, &result.Keywords, &result.CrawledAt,
+			&result.MetaDesc, &result.Keywords,
+			&result.ImageURLs, &result.VideoURLs, &result.OGImage, &result.OGTitle, &result.OGDesc, &result.Author,
+			&result.CrawledAt,
 			&result.IndexedAt, &result.StatusCode, &result.ContentType, &result.Hash)
 		if err != nil {
 			return nil, err
@@ -224,4 +242,76 @@ func (db *DB) UpdateURLStatus(id int64, status string) error {
 	query := `UPDATE url_queue SET status = ?, last_attempt = CURRENT_TIMESTAMP, attempts = attempts + 1 WHERE id = ?`
 	_, err := db.conn.Exec(query, status, id)
 	return err
+}
+
+// SearchImages searches for documents that contain images
+func (db *DB) SearchImages(query string, limit int) ([]*models.SearchResult, error) {
+	searchQuery := `SELECT id, url, title, content, meta_description, keywords,
+		image_urls, video_urls, og_image, og_title, og_description, author,
+		crawled_at, indexed_at, status_code, content_type, hash
+		FROM documents
+		WHERE (title LIKE ? OR content LIKE ? OR meta_description LIKE ?)
+		AND (image_urls IS NOT NULL AND image_urls != '' AND image_urls != '[]')
+		LIMIT ?`
+
+	pattern := "%" + query + "%"
+	rows, err := db.conn.Query(searchQuery, pattern, pattern, pattern, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []*models.SearchResult
+	for rows.Next() {
+		var result models.SearchResult
+		err := rows.Scan(
+			&result.ID, &result.URL, &result.Title, &result.Content,
+			&result.MetaDesc, &result.Keywords,
+			&result.ImageURLs, &result.VideoURLs, &result.OGImage, &result.OGTitle, &result.OGDesc, &result.Author,
+			&result.CrawledAt,
+			&result.IndexedAt, &result.StatusCode, &result.ContentType, &result.Hash)
+		if err != nil {
+			return nil, err
+		}
+		result.Score = 1.0
+		results = append(results, &result)
+	}
+
+	return results, nil
+}
+
+// SearchVideos searches for documents that contain videos
+func (db *DB) SearchVideos(query string, limit int) ([]*models.SearchResult, error) {
+	searchQuery := `SELECT id, url, title, content, meta_description, keywords,
+		image_urls, video_urls, og_image, og_title, og_description, author,
+		crawled_at, indexed_at, status_code, content_type, hash
+		FROM documents
+		WHERE (title LIKE ? OR content LIKE ? OR meta_description LIKE ?)
+		AND (video_urls IS NOT NULL AND video_urls != '' AND video_urls != '[]')
+		LIMIT ?`
+
+	pattern := "%" + query + "%"
+	rows, err := db.conn.Query(searchQuery, pattern, pattern, pattern, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []*models.SearchResult
+	for rows.Next() {
+		var result models.SearchResult
+		err := rows.Scan(
+			&result.ID, &result.URL, &result.Title, &result.Content,
+			&result.MetaDesc, &result.Keywords,
+			&result.ImageURLs, &result.VideoURLs, &result.OGImage, &result.OGTitle, &result.OGDesc, &result.Author,
+			&result.CrawledAt,
+			&result.IndexedAt, &result.StatusCode, &result.ContentType, &result.Hash)
+		if err != nil {
+			return nil, err
+		}
+		result.Score = 1.0
+		results = append(results, &result)
+	}
+
+	return results, nil
 }

@@ -25,6 +25,12 @@ type Document struct {
 	Content     string    `json:"content"`
 	MetaDesc    string    `json:"meta_description"`
 	Keywords    string    `json:"keywords"`
+	ImageURLs   string    `json:"image_urls"`   // JSON array of image URLs
+	VideoURLs   string    `json:"video_urls"`   // JSON array of video URLs
+	OGImage     string    `json:"og_image"`     // Open Graph image
+	OGTitle     string    `json:"og_title"`     // Open Graph title
+	OGDesc      string    `json:"og_description"` // Open Graph description
+	Author      string    `json:"author"`       // Author meta tag
 	CrawledAt   time.Time `json:"crawled_at"`
 	IndexedAt   time.Time `json:"indexed_at"`
 	StatusCode  int       `json:"status_code"`
